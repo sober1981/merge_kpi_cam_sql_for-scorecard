@@ -7,9 +7,19 @@ It searches for files starting with:
 - POG CAM
 - POG MM
 
+Data Corrections Applied:
+1. JOB_TYPE: Motor KPI=Directional, CAM=Rental, POG blanks=Rental, MWD→Rental
+2. DDS: Motor KPI=SDT, POG=Other, CAM=Keep as is
+3. BHA: Blanks set to 1 (all sources)
+4. RUN_NUM: Blanks set to 1 (all sources)
+5. MY (CAM Run Tracker only):
+   - Primary source: "Yield >45 Deg" (Column AP)
+   - Fallback: "Yield 0-45 Deg" (Column AO) if AP blank
+   - Text parsing: "18s" → 18.0, "11s to 15s" → 13.0 (average)
+
 Author: Created for drilling optimization project
-Date: 2025-10-28
-Version: 2.0 (Auto-detect)
+Date: 2025-10-30
+Version: 2.3 (Auto-detect + Data Corrections + MY Column Enhancement)
 """
 
 import pandas as pd
@@ -231,6 +241,65 @@ def read_cam_run_tracker(file_path, mapping):
     print(f"\nReading CAM Run Tracker file...")
     df = pd.read_excel(file_path, sheet_name='General')
     print(f"  Rows: {len(df)}, Columns: {len(df.columns)}")
+
+    # DEBUG: Print column names to check for Yield columns
+    yield_cols = [col for col in df.columns if 'yield' in str(col).lower()]
+    if yield_cols:
+        print(f"  DEBUG: Found Yield columns: {yield_cols}")
+    else:
+        print(f"  DEBUG: No Yield columns found in file")
+
+    # BEFORE renaming: Populate MY column with fallback logic
+    # Primary: Column with "Yield" and ">45" (handles case variations and spaces)
+    # Fallback: Column with "Yield" and "0-45" if primary is blank
+    # Must do this BEFORE column renaming to access original column names
+
+    # Find columns by pattern (case-insensitive, handles extra spaces)
+    yield_high_col = None
+    yield_low_col = None
+    for col in df.columns:
+        col_clean = str(col).strip().lower()
+        if 'yield' in col_clean and '>45' in col_clean:
+            yield_high_col = col  # Store original column name
+        elif 'yield' in col_clean and '0-45' in col_clean:
+            yield_low_col = col  # Store original column name
+
+    if yield_high_col and yield_low_col:
+        print(f"  Found: Primary='{yield_high_col}', Fallback='{yield_low_col}'")
+
+        def get_my_value(row_orig):
+            # Try primary source first (Yield >45)
+            yield_high = row_orig.get(yield_high_col)
+            if pd.notna(yield_high) and str(yield_high).strip() != '':
+                return yield_high
+
+            # Fallback to secondary source (Yield 0-45)
+            yield_low = row_orig.get(yield_low_col)
+            if pd.notna(yield_low) and str(yield_low).strip() != '':
+                return yield_low
+
+            return None
+
+        # Create MY column in original df before renaming
+        df['MY'] = df.apply(get_my_value, axis=1)
+
+        # Count how many values came from each source for debugging
+        total_my = df['MY'].notna().sum()
+        high_populated = df[yield_high_col].notna() & (df[yield_high_col].astype(str).str.strip() != '')
+        low_populated = df[yield_low_col].notna() & (df[yield_low_col].astype(str).str.strip() != '')
+        from_high = (high_populated & df['MY'].notna()).sum()
+        from_low = (~high_populated & low_populated & df['MY'].notna()).sum()
+
+        print(f"  Populated MY column: {total_my} total values ({from_high} from primary, {from_low} from fallback)")
+
+        # Remove any mapping entries that would create duplicate MY column
+        # Since we already created MY with fallback logic, prevent mapping from creating it again
+        keys_to_remove = [k for k, v in mapping.items() if v == 'MY']
+        for key in keys_to_remove:
+            print(f"  Removing mapping '{key}' -> 'MY' to prevent duplicate column")
+            del mapping[key]
+    else:
+        print(f"  WARNING: Could not find both Yield columns (High={yield_high_col}, Low={yield_low_col})")
 
     # Rename columns according to mapping
     df_renamed = df.rename(columns=mapping)
@@ -573,7 +642,7 @@ def populate_lobe_stage_and_dds(df):
             if source == 'Motor_KPI':
                 return 'SDT'
 
-            # CAM Run Tracker: Extract first complete word (company name)
+            # CAM Run Tracker: Keep as is (extract first complete word/company name)
             elif source == 'CAM_Run_Tracker':
                 if pd.notna(row['DDS']):
                     dds_value = str(row['DDS']).strip()
@@ -584,20 +653,14 @@ def populate_lobe_stage_and_dds(df):
                         return match.group(1)
                 return row['DDS']
 
-            # POG files: Based on JOB_TYPE column
+            # POG files: Always "Other"
             elif source in ['POG_CAM_Usage', 'POG_MM_Usage']:
-                if 'JOB_TYPE' in row.index and pd.notna(row['JOB_TYPE']):
-                    job_type = str(row['JOB_TYPE']).strip().upper()
-                    if 'DIRECTIONAL' in job_type:
-                        return 'SDT'
-                    elif 'RENTAL' in job_type:
-                        return 'Other'
-                return None
+                return 'Other'
 
             return row['DDS'] if pd.notna(row['DDS']) else None
 
         df['DDS'] = df.apply(populate_dds, axis=1)
-        print(f"  Populated DDS column based on source-specific logic")
+        print(f"  Populated DDS column (Motor KPI=SDT, POG=Other, CAM=Keep as is)")
 
     return df
 
@@ -713,9 +776,13 @@ def populate_motor_type2(df):
 
 def populate_and_clean_job_type(df):
     """
-    Populate JOB_TYPE for Motor KPI and clean values for all sources:
+    Populate and standardize JOB_TYPE for all sources:
     - Motor KPI: All should be "Directional"
-    - All sources: Replace "Directional- MWD and Motor" with "Directional"
+    - CAM Run Tracker: All should be "Rental"
+    - POG files: If blank, set to "Rental"
+    - Replace "MWD" with "Rental"
+    - Replace "Directional- MWD and Motor" with "Directional"
+    - Only two allowed values: "Directional" or "Rental"
     """
     if 'JOB_TYPE' in df.columns:
         def clean_job_type(row):
@@ -726,18 +793,38 @@ def populate_and_clean_job_type(df):
             if source == 'Motor_KPI':
                 return 'Directional'
 
-            # For other sources, clean the existing value
+            # CAM Run Tracker: All are Rental
+            if source == 'CAM_Run_Tracker':
+                return 'Rental'
+
+            # For POG files and other sources, clean the existing value
             if pd.notna(job_type):
                 job_type_str = str(job_type).strip()
+
+                # Replace "MWD" with "Rental"
+                if job_type_str.upper() == 'MWD':
+                    return 'Rental'
+
                 # Replace "Directional- MWD and Motor" with "Directional"
                 if 'Directional- MWD and Motor' in job_type_str:
                     return 'Directional'
+
+                # Standardize to exact case
+                if job_type_str.upper() == 'DIRECTIONAL':
+                    return 'Directional'
+                if job_type_str.upper() == 'RENTAL':
+                    return 'Rental'
+
                 return job_type_str
+
+            # POG files: If blank, set to "Rental"
+            if source in ['POG_CAM_Usage', 'POG_MM_Usage']:
+                return 'Rental'
 
             return job_type
 
         df['JOB_TYPE'] = df.apply(clean_job_type, axis=1)
-        print(f"  Populated JOB_TYPE for Motor KPI and cleaned values")
+        print(f"  Populated and standardized JOB_TYPE (Motor KPI=Directional, CAM=Rental, POG blanks=Rental)")
 
     return df
 
@@ -832,7 +919,120 @@ def populate_motor_model(df):
     return df
 
 # ============================================================================
-# STEP 15: Convert Numeric Columns to Text
+# STEP 15: Parse MY Column Text for CAM Run Tracker
+# ============================================================================
+
+def parse_my_column_text(df):
+    """
+    Parse MY column text patterns for CAM Run Tracker rows only.
+
+    Patterns handled:
+    - "18s" or "18S" → 18.0
+    - "11s to 15s" → 13.0 (average of 11 and 15)
+    - Case-insensitive
+    - Unknown patterns → Leave as is
+
+    Result must be numeric in merged file.
+    """
+    import re
+
+    if 'MY' not in df.columns:
+        return df
+
+    print("\nParsing MY column text for CAM Run Tracker rows...")
+
+    def parse_my_value(row):
+        # Only process CAM Run Tracker rows
+        if row['SOURCE'] != 'CAM_Run_Tracker':
+            return row['MY']
+
+        my_value = row['MY']
+
+        # If already numeric or empty, return as is
+        if pd.isna(my_value):
+            return my_value
+
+        # Convert to string for processing
+        my_str = str(my_value).strip()
+
+        # If it's already a number, return it
+        try:
+            return float(my_str)
+        except ValueError:
+            pass
+
+        # Pattern 1: Single number with 's' or 'S' (e.g., "18s", "18S")
+        # Match: number followed by optional 's' or 'S'
+        pattern1 = r'^(\d+(?:\.\d+)?)[sS]?$'
+        match1 = re.match(pattern1, my_str, re.IGNORECASE)
+        if match1:
+            return float(match1.group(1))
+
+        # Pattern 2: Range with "to" (e.g., "11s to 15s", "11 to 15")
+        # Match: number (optional s) + "to" + number (optional s)
+        pattern2 = r'^(\d+(?:\.\d+)?)[sS]?\s+to\s+(\d+(?:\.\d+)?)[sS]?$'
+        match2 = re.match(pattern2, my_str, re.IGNORECASE)
+        if match2:
+            num1 = float(match2.group(1))
+            num2 = float(match2.group(2))
+            return (num1 + num2) / 2.0
+
+        # If no pattern matched, return original value (leave as is)
+        return my_value
+
+    df['MY'] = df.apply(parse_my_value, axis=1)
+    print(f"  Parsed MY column text patterns for CAM Run Tracker rows")
+
+    return df
+
+# ============================================================================
+# STEP 16: Populate BHA and RUN_NUM
+# ============================================================================
+
+def populate_bha_and_run_num(df):
+    """
+    Populate BHA and RUN_NUM columns with default values where blank:
+    - POG files: If blank, set BHA and RUN_NUM to 1
+    - Motor KPI & CAM Run Tracker: If blank, set BHA and RUN_NUM to 1
+    - Keep existing values if present
+    """
+
+    # Handle BHA column
+    if 'BHA' in df.columns:
+        def populate_bha(row):
+            source = row['SOURCE']
+            bha = row.get('BHA', None)
+
+            # If blank or NaN, set to 1
+            if pd.isna(bha) or bha == '':
+                return 1
+
+            # Keep existing value
+            return bha
+
+        df['BHA'] = df.apply(populate_bha, axis=1)
+        print(f"  Populated BHA column (blanks set to 1)")
+
+    # Handle RUN_NUM column
+    if 'RUN_NUM' in df.columns:
+        def populate_run_num(row):
+            source = row['SOURCE']
+            run_num = row.get('RUN_NUM', None)
+
+            # If blank or NaN, set to 1
+            if pd.isna(run_num) or run_num == '':
+                return 1
+
+            # Keep existing value
+            return run_num
+
+        df['RUN_NUM'] = df.apply(populate_run_num, axis=1)
+        print(f"  Populated RUN_NUM column (blanks set to 1)")
+
+    return df
+
+# ============================================================================
+# STEP 16: Convert Numeric Columns to Text
 # ============================================================================
 
 def convert_to_text_format(df):
@@ -950,6 +1150,8 @@ def merge_all_files(FILES):
     print("MERGING DATA")
     print("="*80)
 
+    # NOTE: sort=False preserves the original row order from each source file
+    # This ensures CAM Run Tracker rows maintain their original order
     df_merged = pd.concat(dfs, ignore_index=True, sort=False)
     print(f"\nTotal rows after merge: {len(df_merged)}")
     print(f"Total columns: {len(df_merged.columns)}")
@@ -997,17 +1199,109 @@ def merge_all_files(FILES):
     print("\nPopulating MOTOR_MODEL...")
     df_merged = populate_motor_model(df_merged)
 
-    # Step 15: Convert numeric columns to text format
+    # Step 15: Parse MY column text for CAM Run Tracker
+    df_merged = parse_my_column_text(df_merged)
+
+    # Step 16: Populate BHA and RUN_NUM
+    print("\nPopulating BHA and RUN_NUM...")
+    df_merged = populate_bha_and_run_num(df_merged)
+
+    # Step 17: Convert numeric columns to text format
     print("\nConverting numeric columns to text format...")
     df_merged = convert_to_text_format(df_merged)
 
-    # Step 16: Export to Excel
+    # Step 18: Export to Excel
     print("\n" + "="*80)
     print("EXPORTING RESULTS")
     print("="*80)
 
     print(f"\nWriting to: {OUTPUT_FILE}")
-    df_merged.to_excel(OUTPUT_FILE, index=False, sheet_name='Merged Data')
+
+    # Use ExcelWriter with openpyxl for better compatibility with Spotfire
+    from openpyxl import Workbook
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.styles import numbers
+
+    # Create workbook and write data
+    with pd.ExcelWriter(OUTPUT_FILE, engine='openpyxl', mode='w') as writer:
+        # Write DataFrame to Excel
+        df_merged.to_excel(writer, index=False, sheet_name='Merged Data')
+
+        # Get the workbook and worksheet
+        workbook = writer.book
+        worksheet = writer.sheets['Merged Data']
+
+        # Set properties for better compatibility
+        workbook.properties.creator = "Scout Downhole - Drilling Optimization"
+        workbook.properties.title = "Merged Scorecard Data"
+        workbook.properties.description = "Merged drilling scorecard data from multiple sources"
+
+        # Find DATE_IN and DATE_OUT column indices (K and L = columns 11 and 12)
+        header_row = [cell.value for cell in worksheet[1]]
+        date_in_col = None
+        date_out_col = None
+        start_date_col = None
+        end_date_col = None
+
+        for idx, header in enumerate(header_row, start=1):
+            if header == 'DATE_IN':
+                date_in_col = idx
+            elif header == 'DATE_OUT':
+                date_out_col = idx
+            elif header == 'START_DATE':
+                start_date_col = idx
+            elif header == 'END_DATE':
+                end_date_col = idx
+
+        # Format DATE_IN and DATE_OUT as DATE ONLY (no time)
+        # Also convert datetime values to date-only values
+        if date_in_col:
+            for row_idx in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row=row_idx, column=date_in_col)
+                if cell.value is not None:
+                    # If it's a datetime, convert to date only
+                    if hasattr(cell.value, 'date'):
+                        cell.value = cell.value.date()
+                    # Set the number format to display as date only
+                    cell.number_format = 'YYYY-MM-DD'
+
+        if date_out_col:
+            for row_idx in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row=row_idx, column=date_out_col)
+                if cell.value is not None:
+                    # If it's a datetime, convert to date only
+                    if hasattr(cell.value, 'date'):
+                        cell.value = cell.value.date()
+                    # Set the number format to display as date only
+                    cell.number_format = 'YYYY-MM-DD'
+
+        # Format START_DATE and END_DATE as DATE + TIME
+        if start_date_col:
+            for row in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row=row, column=start_date_col)
+                cell.number_format = 'YYYY-MM-DD HH:MM:SS'  # Date and time format
+
+        if end_date_col:
+            for row in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row=row, column=end_date_col)
+                cell.number_format = 'YYYY-MM-DD HH:MM:SS'  # Date and time format
+
+        print(f"  Applied date formatting: DATE_IN/OUT=date only, START/END_DATE=date+time")
+
+        # Auto-adjust column widths for readability
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+
+    print(f"  Excel file created with openpyxl engine and optimized formatting")
 
     print("\n" + "="*80)
     print("MERGE COMPLETE!")

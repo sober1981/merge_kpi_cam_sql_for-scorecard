@@ -29,17 +29,57 @@ pip install pandas openpyxl numpy
 
 ## Usage
 
-### Running the Script
+### Quick Start - 2-Step Process (Recommended)
+
+**Step 1: Merge Files**
 ```bash
-python merge_excel_files.py
+python merge_excel_files_auto.py
+```
+Creates: `MERGED_DATA_YYYYMMDD_HHMMSS.xlsx`
+
+**Step 2: Clean and Remove Duplicates**
+```bash
+python clean_merge_final.py
+```
+Creates: `MERGE_CLEAN_EXCEL_FILES_AUTO_YYYYMMDD_HHMMSS.xlsx` (Final cleaned file)
+
+### Alternative - 3-Step Process (Detailed)
+
+**Step 1: Merge Files**
+```bash
+python merge_excel_files_auto.py
 ```
 
-The script will:
-1. Load all source files and mapping configuration
-2. Apply data transformations and standardizations
-3. Merge all data into a single dataset
-4. Export results to a timestamped Excel file
-5. Display summary statistics
+**Step 2: Detect Duplicates (Optional - for review)**
+```bash
+python detect_duplicates.py
+```
+Creates: `CLEAN_MERGE_YYYYMMDD_HHMMSS.xlsx` (with duplicates highlighted in yellow)
+
+**Step 3: Remove Duplicates**
+```bash
+python clean_dd_r_merge.py
+```
+Creates: `CLEAN_DD_R_MERGE_YYYYMMDD_HHMMSS.xlsx` (Final cleaned file)
+
+**Note:** Both workflows produce identical final output files.
+
+### What the Scripts Do
+
+**merge_excel_files_auto.py:**
+1. Automatically finds source files by pattern matching
+2. Loads all source files and mapping configuration
+3. Applies data transformations and standardizations
+4. Merges all data into a single dataset
+5. Exports results to a timestamped Excel file
+6. Display summary statistics
+
+**clean_merge_final.py:**
+1. Removes rows with no hours and no drill distance
+2. Detects duplicates using JOB_NUM, Total Hrs (±5h tolerance), and last 3 digits of SN
+3. Removes ALL duplicate rows (both Directional and Rental)
+4. Formats DATE_IN and DATE_OUT as date-only
+5. Produces final clean file with no duplicates
 
 ## Data Transformations
 
@@ -194,7 +234,62 @@ Source-specific classification logic:
 - Output file naming includes timestamp to prevent overwriting
 - Console output provides detailed progress and statistics
 
+## Data Quality Corrections (Version 2.3)
+
+The merge script automatically applies the following data corrections:
+
+### 1. JOB_TYPE Standardization
+- **Motor KPI**: All set to "Directional"
+- **CAM Run Tracker**: All set to "Rental"
+- **POG files**: Blanks set to "Rental", "MWD" converted to "Rental"
+- Only two allowed values: "Directional" or "Rental"
+
+### 2. DDS Column Population
+- **Motor KPI**: All set to "SDT"
+- **POG files**: All set to "Other"
+- **CAM Run Tracker**: Keeps existing values (first word/company name)
+
+### 3. BHA Column Defaults
+- **All sources**: Blank values set to 1
+- Existing values preserved
+
+### 4. RUN_NUM Column Defaults
+- **All sources**: Blank values set to 1
+- Existing values preserved
+
+### 5. MY Column Enhancement (CAM Run Tracker Only)
+- **Primary source**: Column AP ("Yield >45 Deg")
+- **Fallback source**: Column AO ("Yield 0-45 Deg") when AP is blank
+- **Text parsing**:
+  - "18s" → 18.0
+  - "11s to 15s" → 13.0 (average)
+- **Result**: Numeric values in merged file
+- **Row order**: CAM Run Tracker original order preserved
+
+### 6. Duplicate Detection and Removal
+The cleaning script (`clean_merge_final.py`) removes duplicates using three criteria:
+1. **JOB_NUM** must match exactly
+2. **Total Hrs** within ±5 hours tolerance (or TOTAL_DRILL if hrs blank)
+3. **Last 3 digits of Serial Number** must match
+
+**Removal Logic:**
+- **Directional duplicates**: POG rows matching Motor KPI are REMOVED
+- **Rental duplicates**: POG rows matching CAM Run Tracker are REMOVED
+- **Result**: Only reference files (Motor KPI, CAM Run Tracker) and unique POG rows remain
+
 ## Version History
+- Version 2.3 (2025-10-30): Data quality corrections and duplicate removal
+  - Added JOB_TYPE standardization
+  - Added DDS, BHA, RUN_NUM default values
+  - Added MY column enhancement with fallback logic and text parsing
+  - Added clean_merge_final.py for single-step duplicate removal
+  - Fixed duplicate column issue in MY creation
+  - Added date-only formatting for DATE_IN/DATE_OUT
+- Version 2.2 (2025-10-29): Duplicate detection and cleaning scripts
+  - Added detect_duplicates.py
+  - Added clean_dd_merge.py and clean_dd_r_merge.py
+- Version 2.1 (2025-10-29): Auto-detect file patterns
+  - Changed to pattern-based file detection
 - Version 1.0 (2025-10-28): Initial release
   - Implements all data transformations
   - Full MOTOR_TYPE2 classification
