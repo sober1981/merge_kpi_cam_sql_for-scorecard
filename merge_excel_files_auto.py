@@ -242,6 +242,12 @@ def read_cam_run_tracker(file_path, mapping):
     df = pd.read_excel(file_path, sheet_name='General')
     print(f"  Rows: {len(df)}, Columns: {len(df.columns)}")
 
+    # DEBUG: Check if Section column exists
+    if 'Section' in df.columns:
+        print(f"  DEBUG: Section column found with {df['Section'].notna().sum()} non-null values")
+    else:
+        print(f"  DEBUG: WARNING - Section column NOT found in file!")
+
     # DEBUG: Print column names to check for Yield columns
     yield_cols = [col for col in df.columns if 'yield' in str(col).lower()]
     if yield_cols:
@@ -301,9 +307,34 @@ def read_cam_run_tracker(file_path, mapping):
     else:
         print(f"  WARNING: Could not find both Yield columns (High={yield_high_col}, Low={yield_low_col})")
 
+    # DEBUG: Check if Section -> PHASES is in the mapping
+    if 'Section' in mapping:
+        print(f"  DEBUG: Section maps to: {mapping['Section']}")
+    else:
+        print(f"  DEBUG: WARNING - Section NOT in mapping dictionary!")
+
     # Rename columns according to mapping
     df_renamed = df.rename(columns=mapping)
     df_renamed['SOURCE'] = 'CAM_Run_Tracker'
+
+    # DEBUG: Check PHASES after rename
+    if 'PHASES' in df_renamed.columns:
+        print(f"  DEBUG: After rename, PHASES has {df_renamed['PHASES'].notna().sum()} non-null values")
+    else:
+        print(f"  DEBUG: WARNING - PHASES column NOT in renamed dataframe!")
+
+    # Special handling: Section column needs to populate BOTH PHASES and Phase_CALC
+    if 'Section' in df.columns:
+        # Populate PHASES from Section
+        df_renamed['PHASES'] = df['Section']
+        print(f"  Mapped Section -> PHASES: {df_renamed['PHASES'].notna().sum()} values")
+
+        # Also ensure Phase_CALC has the same data (it might have been renamed already)
+        if 'Phase_CALC' in df_renamed.columns:
+            # If Phase_CALC is empty or has fewer values than Section, copy from Section
+            if df_renamed['Phase_CALC'].isna().all() or df_renamed['Phase_CALC'].notna().sum() < df['Section'].notna().sum():
+                df_renamed['Phase_CALC'] = df['Section']
+                print(f"  Also mapped Section -> Phase_CALC: {df_renamed['Phase_CALC'].notna().sum()} values")
 
     # Special handling: Map Run # to BHA
     if 'Run #' in df.columns:
