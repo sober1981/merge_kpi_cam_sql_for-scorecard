@@ -5,16 +5,28 @@ This Python script merges drilling scorecard data from multiple Excel files into
 
 ## Files Required
 
-### Input Files
-1. **Motor KPI (16).xlsx** - Motor performance data (281 rows)
-2. **CAM Run Tracker Rev 4 (14)_example.xlsx** - CAM run tracking data (2,371 rows)
-3. **POG CAM Usage (2).xlsx** - POG CAM usage data (251 rows)
-4. **POG MM Usage (3).xlsx** - POG MM usage data (228 rows)
+### Required Files in Your Working Folder
+
+**Source Data Files:**
+1. **Motor KPI (##).xlsx** - Motor performance data (pattern: "Motor KPI (*.xlsx")
+2. **CAM Run Tracker Rev # (##)_example.xlsx** - CAM run tracking data (pattern: "CAM Run Tracker*.xlsx")
+3. **POG CAM Usage (##).xlsx** - POG CAM usage data (pattern: "POG CAM Usage*.xlsx")
+4. **POG MM Usage (##).xlsx** - POG MM usage data (pattern: "POG MM Usage*.xlsx")
+
+**Configuration Files:**
 5. **FORMAT GRAL TABLE.xlsx** - Column mapping template (171 target columns)
 6. **LISTS_BASIN AND FORM_FAM.xlsx** - Lookup tables for basin and formation family
+7. **CELL QC CRITERIA.xlsx** - QC validation rules (50+ criteria, 2 sheets: "FULL LIST" and "phase equivalent")
 
-### Output File
-- **MERGED_DATA_YYYYMMDD_HHMMSS.xlsx** - Merged dataset with timestamp (3,131 rows, 171 columns)
+**Script Files:**
+8. **merge_excel_files_auto.py** - Step 1: Merge all source files
+9. **clean_merge_final.py** - Step 2: Remove duplicates and clean data
+10. **qc_data_quality.py** - Step 3: QC validation and issue highlighting
+
+### Output Files
+- **MERGED_DATA_YYYYMMDD_HHMMSS.xlsx** - Step 1 output: Merged dataset
+- **MERGE_CLEAN_EXCEL_FILES_AUTO_YYYYMMDD_HHMMSS.xlsx** - Step 2 output: Clean data without duplicates
+- **MERGE_CLEAN_QC_YYYYMMDD_HHMMSS.xlsx** - Step 3 output: Final file with QC validation
 
 ## Installation
 
@@ -29,7 +41,7 @@ pip install pandas openpyxl numpy
 
 ## Usage
 
-### Quick Start - 2-Step Process (Recommended)
+### Complete Workflow - 3-Step Process (Recommended)
 
 **Step 1: Merge Files**
 ```bash
@@ -41,28 +53,27 @@ Creates: `MERGED_DATA_YYYYMMDD_HHMMSS.xlsx`
 ```bash
 python clean_merge_final.py
 ```
-Creates: `MERGE_CLEAN_EXCEL_FILES_AUTO_YYYYMMDD_HHMMSS.xlsx` (Final cleaned file)
+Creates: `MERGE_CLEAN_EXCEL_FILES_AUTO_YYYYMMDD_HHMMSS.xlsx`
 
-### Alternative - 3-Step Process (Detailed)
+**Step 3: QC Validation**
+```bash
+python qc_data_quality.py
+```
+Creates: `MERGE_CLEAN_QC_YYYYMMDD_HHMMSS.xlsx` (Final file with QC validation)
+
+### Alternative - Quick Merge Only (No QC)
 
 **Step 1: Merge Files**
 ```bash
 python merge_excel_files_auto.py
 ```
 
-**Step 2: Detect Duplicates (Optional - for review)**
+**Step 2: Clean and Remove Duplicates**
 ```bash
-python detect_duplicates.py
+python clean_merge_final.py
 ```
-Creates: `CLEAN_MERGE_YYYYMMDD_HHMMSS.xlsx` (with duplicates highlighted in yellow)
 
-**Step 3: Remove Duplicates**
-```bash
-python clean_dd_r_merge.py
-```
-Creates: `CLEAN_DD_R_MERGE_YYYYMMDD_HHMMSS.xlsx` (Final cleaned file)
-
-**Note:** Both workflows produce identical final output files.
+**Note:** Running the QC script (Step 3) is highly recommended to identify data quality issues.
 
 ### What the Scripts Do
 
@@ -80,6 +91,16 @@ Creates: `CLEAN_DD_R_MERGE_YYYYMMDD_HHMMSS.xlsx` (Final cleaned file)
 3. Removes ALL duplicate rows (both Directional and Rental)
 4. Formats DATE_IN and DATE_OUT as date-only
 5. Produces final clean file with no duplicates
+
+**qc_data_quality.py:**
+1. Validates merged clean data against 50+ QC criteria from CELL QC CRITERIA.xlsx
+2. Performs source-specific validations (Motor_KPI, CAM_Run_Tracker, POG files)
+3. Applies conditional validations (e.g., CUR fields only for Motor_KPI)
+4. Validates numeric ranges, allowed value lists, state codes, and phase mappings
+5. Highlights cells with validation issues in yellow
+6. Adds QC_FLAG column (1 = has issues, 0 = clean)
+7. Formats dates as date-only (no timestamps)
+8. Produces final QC-validated file with detailed validation summary
 
 ## Data Transformations
 
@@ -277,7 +298,40 @@ The cleaning script (`clean_merge_final.py`) removes duplicates using three crit
 - **Rental duplicates**: POG rows matching CAM Run Tracker are REMOVED
 - **Result**: Only reference files (Motor KPI, CAM Run Tracker) and unique POG rows remain
 
+### 7. QC Validation (qc_data_quality.py)
+The QC script validates data against 50+ criteria from CELL QC CRITERIA.xlsx:
+
+**Validation Types:**
+- **Source-specific validations**: Fields required only in certain source files
+  - "only empty in CAM_Run_tracker" - Required in Motor_KPI and POG files
+  - "only empty in POG" - Required in Motor_KPI and CAM_Run_Tracker
+  - "only for Motor_KPI" - CUR-related fields validated only for Motor_KPI rows
+- **Conditional validations**: Fields required based on other column values
+  - CUR fields required when "CUR" appears in Phase_CALC
+  - REPORTED_AS required when INCIDENT_NUM is filled
+- **Numeric range validation**: <30000, <600, etc.
+- **List validation**: Allowed values (e.g., SOURCE, JOB_TYPE)
+- **State validation**: Valid US state codes
+- **Phase mapping**: PHASES maps to correct Phase_CALC value
+- **Required field validation**: NON-BLANK fields must have values
+
+**Output Features:**
+- Yellow cell highlighting for validation failures
+- QC_FLAG column (1 = row has issues, 0 = clean)
+- Date-only formatting for DATE_IN and DATE_OUT
+- Detailed validation summary with issue counts
+
 ## Version History
+- Version 2.4 (2025-11-04): QC validation and PHASES column fix
+  - Added qc_data_quality.py for comprehensive QC validation
+  - Fixed PHASES column mapping for CAM_Run_Tracker (now populates both PHASES and Phase_CALC)
+  - Implemented 50+ QC validation rules with source-specific logic
+  - Added Motor_KPI-only CUR field validations
+  - Added yellow cell highlighting for validation issues
+  - Added QC_FLAG column for easy filtering
+  - Fixed SOURCE column validation
+  - Reduced false positives by 81% (13,092 → 2,524 cells)
+  - Achieved 39.2% clean rows (1,138 of 2,903)
 - Version 2.3 (2025-10-30): Data quality corrections and duplicate removal
   - Added JOB_TYPE standardization
   - Added DDS, BHA, RUN_NUM default values
